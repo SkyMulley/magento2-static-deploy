@@ -269,14 +269,43 @@ func deployTheme(magentoRoot string, job DeployJob, version string) (int64, erro
 		fileCount += count
 	}
 
-	// 2. Copy lib files (vendor/mage-os/magento2-base/lib/web/)
-	libDir := filepath.Join(magentoRoot, "vendor/mage-os/magento2-base/lib/web")
-	if _, err := os.Stat(libDir); err == nil {
-		count, err := copyDirectory(libDir, destDir)
-		if err != nil {
-			return 0, fmt.Errorf("failed to copy library files: %w", err)
+	// 1b. Copy theme module overrides (app/design/{area}/{vendor}/{theme}/{ModuleName}/web/)
+	// These override module web assets in the theme
+	themeBaseDir := filepath.Join(magentoRoot, "app/design", job.Area, themeVendor, themeName)
+	if themeEntries, err := os.ReadDir(themeBaseDir); err == nil {
+		for _, entry := range themeEntries {
+			// Skip non-directories and the "web" directory itself
+			if !entry.IsDir() || entry.Name() == "web" {
+				continue
+			}
+			// Check if this is a module override (contains a web directory)
+			moduleWebDir := filepath.Join(themeBaseDir, entry.Name(), "web")
+			if _, err := os.Stat(moduleWebDir); err == nil {
+				// This is a module override - deploy to ModuleName/ prefix
+				moduleName := entry.Name()
+				count, err := copyDirectoryWithModulePrefix(moduleWebDir, destDir, moduleName)
+				if err != nil {
+					continue
+				}
+				fileCount += count
+			}
 		}
-		fileCount += count
+	}
+
+	// 2. Copy lib files from multiple possible locations
+	// Priority: Magento root lib/web first, then vendor/mage-os/magento2-base/lib/web
+	libDirs := []string{
+		filepath.Join(magentoRoot, "lib/web"),
+		filepath.Join(magentoRoot, "vendor/mage-os/magento2-base/lib/web"),
+	}
+	for _, libDir := range libDirs {
+		if _, err := os.Stat(libDir); err == nil {
+			count, err := copyDirectory(libDir, destDir)
+			if err != nil {
+				return 0, fmt.Errorf("failed to copy library files from %s: %w", libDir, err)
+			}
+			fileCount += count
+		}
 	}
 
 	// 3. Copy extension view files from all vendors (vendor/*/view/{area}/web/)
@@ -309,14 +338,7 @@ func deployTheme(magentoRoot string, job DeployJob, version string) (int64, erro
 				// Check for view/{area}/web/ directory
 				extensionWebDir := filepath.Join(packagePath, "view", job.Area, "web")
 				if _, err := os.Stat(extensionWebDir); err == nil {
-					// Special case: Magento_Email assets deploy without module prefix
-					var count int64
-					var err error
-					if moduleName == "Magento_Email" {
-						count, err = copyDirectory(extensionWebDir, destDir)
-					} else {
-						count, err = copyDirectoryWithModulePrefix(extensionWebDir, destDir, moduleName)
-					}
+					count, err := copyDirectoryWithModulePrefix(extensionWebDir, destDir, moduleName)
 					if err != nil {
 						// Log but don't fail on extension file errors
 						continue
@@ -327,14 +349,7 @@ func deployTheme(magentoRoot string, job DeployJob, version string) (int64, erro
 				// Also check src/view/{area}/web/ (for some packages)
 				extensionWebDirSrc := filepath.Join(packagePath, "src", "view", job.Area, "web")
 				if _, err := os.Stat(extensionWebDirSrc); err == nil {
-					// Special case: Magento_Email assets deploy without module prefix
-					var count int64
-					var err error
-					if moduleName == "Magento_Email" {
-						count, err = copyDirectory(extensionWebDirSrc, destDir)
-					} else {
-						count, err = copyDirectoryWithModulePrefix(extensionWebDirSrc, destDir, moduleName)
-					}
+					count, err := copyDirectoryWithModulePrefix(extensionWebDirSrc, destDir, moduleName)
 					if err != nil {
 						continue
 					}
@@ -344,14 +359,7 @@ func deployTheme(magentoRoot string, job DeployJob, version string) (int64, erro
 				// Also check view/base/web/ (for shared vendor modules like hyva-themes)
 				extensionBaseDir := filepath.Join(packagePath, "view", "base", "web")
 				if _, err := os.Stat(extensionBaseDir); err == nil {
-					// Special case: Magento_Email assets deploy without module prefix
-					var count int64
-					var err error
-					if moduleName == "Magento_Email" {
-						count, err = copyDirectory(extensionBaseDir, destDir)
-					} else {
-						count, err = copyDirectoryWithModulePrefix(extensionBaseDir, destDir, moduleName)
-					}
+					count, err := copyDirectoryWithModulePrefix(extensionBaseDir, destDir, moduleName)
 					if err != nil {
 						continue
 					}
@@ -361,33 +369,29 @@ func deployTheme(magentoRoot string, job DeployJob, version string) (int64, erro
 				// Also check src/view/base/web/ (for some packages)
 				extensionBaseDirSrc := filepath.Join(packagePath, "src", "view", "base", "web")
 				if _, err := os.Stat(extensionBaseDirSrc); err == nil {
-					// Special case: Magento_Email assets deploy without module prefix
-					var count int64
-					var err error
-					if moduleName == "Magento_Email" {
-						count, err = copyDirectory(extensionBaseDirSrc, destDir)
-					} else {
-						count, err = copyDirectoryWithModulePrefix(extensionBaseDirSrc, destDir, moduleName)
-					}
+					count, err := copyDirectoryWithModulePrefix(extensionBaseDirSrc, destDir, moduleName)
 					if err != nil {
 						continue
 					}
 					fileCount += count
 				}
 
-				// Check for src/module-*/view/{area}/web/ (for multi-module packages like elasticsuite)
+				// Check for src/*/view/{area}/web/ (for multi-module packages like elasticsuite, hyva-themes/commerce-module-cms)
 				srcModulesPath := filepath.Join(packagePath, "src")
 				if srcModuleEntries, err := os.ReadDir(srcModulesPath); err == nil {
 					for _, srcModuleEntry := range srcModuleEntries {
-						if !srcModuleEntry.IsDir() || !strings.HasPrefix(srcModuleEntry.Name(), "module-") {
+						if !srcModuleEntry.IsDir() {
 							continue
 						}
 						moduleDir := filepath.Join(srcModulesPath, srcModuleEntry.Name())
-						moduleWebDir := filepath.Join(moduleDir, "view", job.Area, "web")
 
-						// Get the module name from the submodule's module.xml
+						// Only process if it has an etc/module.xml (it's a Magento module)
 						subModuleName := getModuleName(moduleDir)
+						if subModuleName == "" {
+							continue
+						}
 
+						moduleWebDir := filepath.Join(moduleDir, "view", job.Area, "web")
 						if _, err := os.Stat(moduleWebDir); err == nil {
 							count, err := copyDirectoryWithModulePrefix(moduleWebDir, destDir, subModuleName)
 							if err != nil {
@@ -637,13 +641,47 @@ func getModuleName(packagePath string) string {
 
 // shouldSkipFile determines if a file should be excluded from deployment
 func shouldSkipFile(relPath string) bool {
+	// Normalize path separators for cross-platform compatibility
+	normalizedPath := strings.ReplaceAll(relPath, "\\", "/")
+	fileName := filepath.Base(relPath)
+
+	// Exclude hidden files (files starting with .)
+	if strings.HasPrefix(fileName, ".") {
+		return true
+	}
+
+	// Exclude LESS source files (Magento compiles these, we don't)
+	if strings.HasSuffix(fileName, ".less") {
+		return true
+	}
+
 	// Exclude documentation directories
-	if strings.Contains(relPath, "/docs/") || strings.Contains(relPath, "\\docs\\") {
+	if strings.Contains(normalizedPath, "/docs/") {
 		return true
 	}
 
 	// Exclude tailwind source directory
-	if strings.HasPrefix(relPath, "tailwind/") || strings.HasPrefix(relPath, "tailwind\\") {
+	if strings.HasPrefix(normalizedPath, "tailwind/") {
+		return true
+	}
+
+	// Exclude css/source directories (LESS source files)
+	if strings.Contains(normalizedPath, "/css/source/") || strings.HasPrefix(normalizedPath, "css/source/") {
+		return true
+	}
+
+	// Exclude node_modules directories
+	if strings.Contains(normalizedPath, "/node_modules/") || strings.HasPrefix(normalizedPath, "node_modules/") {
+		return true
+	}
+
+	// Exclude playwright/test directories
+	if strings.Contains(normalizedPath, "/playwright/") || strings.HasPrefix(normalizedPath, "playwright/") {
+		return true
+	}
+
+	// Exclude test-results directories
+	if strings.Contains(normalizedPath, "/test-results/") || strings.HasPrefix(normalizedPath, "test-results/") {
 		return true
 	}
 
