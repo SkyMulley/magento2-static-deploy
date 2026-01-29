@@ -314,3 +314,68 @@ Since this tool only copies files, it integrates well with existing Magento setu
 1. Hyva theme builds are done via npm
 2. Static files are copied to pub/static by this tool
 3. Cache can be cleared separately as needed
+
+## CI/CD Integration
+
+### GitLab CI/CD
+
+If you're using a GitLab CI/CD pipeline with a `setup-static-content-deploy` job, you can override it to use this Go binary for significantly faster frontend deployments:
+
+```yaml
+# Override setup-static-content-deploy to use Go binary for frontend (10x faster)
+setup-static-content-deploy:
+  stage: build
+  script:
+    - source ~/.nvm/nvm.sh
+    - nvm use ${NODE_VERSION:---lts} || nvm install ${NODE_VERSION:---lts}
+    # Build Hyva theme assets
+    - if [ ! -z $THEME_PATH ]; then npm --prefix $THEME_PATH ci --no-audit; fi
+    - if [ ! -z $THEME_PATH ]; then NODE_ENV=production npm --prefix $THEME_PATH run build-prod; fi
+    # Install less compiler globally (nvm handles this without sudo)
+    - npm install -g less
+    # Download and use Go binary for frontend static content (much faster)
+    - echo "Downloading magento2-static-deploy binary..."
+    - curl -sL -o /tmp/magento2-static-deploy https://github.com/elgentos/magento2-static-deploy/releases/latest/download/magento2-static-deploy-linux-amd64
+    - chmod +x /tmp/magento2-static-deploy
+    # Deploy frontend static content using Go binary
+    - echo "Deploying frontend static content using Go binary..."
+    - /tmp/magento2-static-deploy -root . -themes ${THEMES} -locales $(echo ${STATIC_LOCALES} | tr ' ' ',') -areas frontend -v
+    # Deploy admin static content using Magento CLI (Go binary is Hyva-focused)
+    - php bin/magento setup:static-content:deploy -f -j ${JOB_CONCURRENCY:-$(nproc)} --area adminhtml ${STATIC_ADMIN_LOCALES:-"nl_NL en_US"}
+```
+
+This approach uses the Go binary for frontend (Hyva) themes while falling back to Magento's native CLI for adminhtml, which may require RequireJS config merging and other Luma-specific processing.
+
+### Deployer (Pull Approach)
+
+If you use [Deployer](https://deployer.org/) with a pull-based deployment strategy, you can override the `magento:deploy:assets` task:
+
+```php
+task('magento:deploy:assets', function () {
+    // Deploy adminhtml using Magento CLI
+    invoke('magento:deploy:assets:adminhtml');
+
+    // Download the Go binary
+    within("{{release_or_current_path}}", function () {
+        run('curl -sL -o /tmp/magento2-static-deploy https://github.com/elgentos/magento2-static-deploy/releases/latest/download/magento2-static-deploy-linux-amd64');
+        run('chmod +x /tmp/magento2-static-deploy');
+    });
+
+    // Deploy frontend themes using Go binary
+    $themes = get('magento_themes');
+    foreach ($themes as $theme => $locales) {
+        within("{{release_or_current_path}}", function () use ($theme, $locales) {
+            run('echo "Deploying static content for theme ' . $theme . ' and locales: ' . $locales . '"');
+            run('/tmp/magento2-static-deploy -root . -themes ' . $theme . ' -locales ' . join(',', explode(' ', $locales)) . ' -areas frontend -v');
+        });
+    }
+});
+```
+
+Make sure your `magento_themes` configuration is set up in your `deploy.php`:
+
+```php
+set('magento_themes', [
+    'Vendor/Hyva' => 'nl_NL en_US',
+]);
+```
