@@ -23,12 +23,16 @@ On this project, deployment improved from **~115 seconds** (Magento native) to *
 
 ```bash
 cd tools/magento2-static-deploy
-go build -o magento2-static-deploy main.go watcher.go
+go build -o magento2-static-deploy main.go watcher.go less.go less_preprocessor.go
 ```
 
 ### Requirements
 
 - Go 1.21 or later
+- Node.js with `lessc` (for email CSS compilation)
+  ```bash
+  npm install -g less
+  ```
 
 ## Usage
 
@@ -170,11 +174,11 @@ This is useful for deployment tools like [Deployer](https://github.com/deployphp
 
 ## What It Doesn't Do (Yet)
 
-This version performs pure file copying. The following are handled separately:
+This version performs file copying plus email CSS compilation. The following are handled separately:
 
-- **LESS/SCSS Compilation**: Done by Hyva theme's npm build process
+- **Full LESS/SCSS Compilation**: Done by Hyva theme's npm build process (email CSS is compiled by this tool)
 - **JavaScript Minification**: Done by npm/webpack
-- **CSS Minification**: Done by build tools
+- **CSS Minification**: Done by build tools (email CSS is minified by lessc)
 - **Symlink Fallback**: Not implemented
 - **Admin Theme Deployment**: Skipped if theme doesn't exist (Magento core themes don't need custom deployment)
 - **Vendor Theme Path Resolution**: Gracefully skips themes not found in app/design or vendor paths
@@ -223,7 +227,8 @@ Magento's native static deploy performs several compilation and generation steps
 | Feature | Magento Native | This Tool |
 |---------|---------------|-----------|
 | File copying | ✅ | ✅ |
-| LESS → CSS compilation | ✅ | ❌ |
+| Email CSS compilation | ✅ | ✅ (via lessc) |
+| LESS → CSS compilation (full) | ✅ | ❌ |
 | RequireJS config merging | ✅ | ❌ |
 | JS translation generation | ✅ | ❌ |
 | JavaScript bundling | ✅ | ❌ |
@@ -260,15 +265,26 @@ This would add significant complexity and external dependencies (Node.js, potent
 - ✅ Library files (`lib/web/`)
 - ✅ Content version management
 - ✅ Verbose progress reporting
+- ✅ Email CSS compilation (email.css, email-inline.css, email-fonts.css)
 
 ### Not Implemented
 
-- ❌ LESS/SCSS compilation (use npm for Hyva)
+- ❌ Full LESS/SCSS compilation (use npm for Hyva)
 - ❌ RequireJS config merging
 - ❌ JavaScript bundling
 - ❌ JS translation generation
 - ❌ Symlink fallback strategy
 - ❌ Incremental deployment detection
+
+### Email CSS Differences
+
+The email CSS output may differ slightly from Magento's native output:
+
+1. **email.css**: Node's `lessc` correctly implements the LESS `@import (reference)` directive, outputting only non-inline styles (media queries, hover states). Magento's PHP LESS compiler appears to output all styles. Our output is more spec-compliant.
+
+2. **email-inline.css**: Minor differences in URL placeholder format and potentially different font families based on theme variables (e.g., 'Open Sans' from Hyva email module vs 'Helvetica Neue' from Luma).
+
+These differences are functionally equivalent and should not affect email rendering.
 
 ## Development
 
@@ -276,11 +292,13 @@ This would add significant complexity and external dependencies (Node.js, potent
 
 - `main.go`: CLI interface, orchestration logic
 - `watcher.go`: File change detection (for future watch mode)
+- `less.go`: LESS to CSS compilation using Node's lessc
+- `less_preprocessor.go`: Magento-style LESS preprocessing (@magento_import, source staging)
 
 ### Building
 
 ```bash
-go build -o magento2-static-deploy main.go watcher.go
+go build -o magento2-static-deploy main.go watcher.go less.go less_preprocessor.go
 ```
 
 ### Performance Profiling

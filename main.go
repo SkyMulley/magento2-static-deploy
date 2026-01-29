@@ -112,6 +112,9 @@ func deployStatic(magentoRoot string, locales, themes, areas []string, numJobs i
 	// Process jobs in parallel
 	results := processJobs(magentoRoot, jobs, numJobs, verbose, version)
 
+	// Compile LESS files (email CSS) after file copying is complete
+	compileLessForResults(magentoRoot, results, verbose)
+
 	// Create deployment version file if any files were deployed
 	totalFiles := int64(0)
 	for _, result := range results {
@@ -122,6 +125,37 @@ func deployStatic(magentoRoot string, locales, themes, areas []string, numJobs i
 	}
 
 	return results
+}
+
+// compileLessForResults compiles LESS files for all successful deployment results
+func compileLessForResults(magentoRoot string, results []DeployResult, verbose bool) {
+	if verbose {
+		fmt.Printf("\nCompiling email CSS...\n")
+	}
+
+	for _, result := range results {
+		if result.Error != "" {
+			continue // Skip failed deployments
+		}
+
+		destDir := filepath.Join(magentoRoot, "pub/static", result.Job.Area, result.Job.Theme, result.Job.Locale)
+
+		if verbose {
+			fmt.Printf("  %s/%s (%s):\n", result.Job.Theme, result.Job.Area, result.Job.Locale)
+		}
+
+		// Use preprocessor to handle Magento's complex LESS structure
+		preprocessor := NewLessPreprocessor(magentoRoot, verbose)
+		if err := preprocessor.PreprocessAndCompile(destDir, result.Job.Area, result.Job.Theme); err != nil {
+			if verbose {
+				fmt.Printf("    ✗ LESS preprocessing error: %v\n", err)
+			}
+		}
+	}
+
+	if verbose {
+		fmt.Println()
+	}
 }
 
 // createDeployJobs generates all combinations of locales/themes/areas to deploy
