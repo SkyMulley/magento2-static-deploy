@@ -13,9 +13,9 @@ On this project, deployment improved from **~115 seconds** (Magento native) to *
 ## Why It's Faster
 
 1. **Native Parallelization**: Go's goroutines handle true concurrent I/O across multiple CPU cores
-2. **Low Overhead**: No PHP bootstrap, no Magento dependency injection, no database access
+2. **Low Overhead**: No full Magento bootstrap, no dependency injection container, no database access
 3. **Efficient I/O**: Optimized file copying with buffered I/O and minimal memory allocation
-4. **Simple Logic**: Deployment doesn't require PHP preprocessing (LESS compilation, etc. handled by NPM)
+4. **Minimal Compilation**: Only compiles email CSS (using PHP's wikimedia/less.php); main theme CSS handled by npm build
 
 ## Installation
 
@@ -29,10 +29,7 @@ go build -o magento2-static-deploy main.go watcher.go less.go less_preprocessor.
 ### Requirements
 
 - Go 1.21 or later
-- Node.js with `lessc` (for email CSS compilation)
-  ```bash
-  npm install -g less
-  ```
+- PHP available in PATH (uses Magento's `wikimedia/less.php` for email CSS compilation)
 
 ## Usage
 
@@ -176,9 +173,9 @@ This is useful for deployment tools like [Deployer](https://github.com/deployphp
 
 This version performs file copying plus email CSS compilation. The following are handled separately:
 
-- **Full LESS/SCSS Compilation**: Done by Hyva theme's npm build process (email CSS is compiled by this tool)
+- **Full LESS/SCSS Compilation**: Done by Hyva theme's npm build process (email CSS is compiled by this tool using PHP)
 - **JavaScript Minification**: Done by npm/webpack
-- **CSS Minification**: Done by build tools (email CSS is minified by lessc)
+- **CSS Minification**: Done by build tools (email CSS is minified by wikimedia/less.php)
 - **Symlink Fallback**: Not implemented
 - **Admin Theme Deployment**: Skipped if theme doesn't exist (Magento core themes don't need custom deployment)
 - **Vendor Theme Path Resolution**: Gracefully skips themes not found in app/design or vendor paths
@@ -227,7 +224,7 @@ Magento's native static deploy performs several compilation and generation steps
 | Feature | Magento Native | This Tool |
 |---------|---------------|-----------|
 | File copying | ✅ | ✅ |
-| Email CSS compilation | ✅ | ✅ (via lessc) |
+| Email CSS compilation | ✅ | ✅ (via wikimedia/less.php) |
 | LESS → CSS compilation (full) | ✅ | ❌ |
 | RequireJS config merging | ✅ | ❌ |
 | JS translation generation | ✅ | ❌ |
@@ -238,12 +235,12 @@ Magento's native static deploy performs several compilation and generation steps
 
 Implementing full Luma compatibility would require:
 
-1. **LESS Compilation** - Either embedding a LESS compiler or shelling out to Node.js `lessc`
+1. **Full LESS Compilation** - Compiling all theme LESS files (not just email CSS) with proper source file resolution
 2. **RequireJS Config Merging** - Parsing and merging JavaScript config objects from all modules
 3. **JS Translation Generation** - Reading Magento's PHP translation dictionaries and converting to JSON
 4. **JavaScript Bundling** - Implementing Magento's complex bundling logic
 
-This would add significant complexity and external dependencies (Node.js, potentially PHP for translations), negating much of the simplicity and speed benefits of the Go implementation.
+While we now use PHP's `wikimedia/less.php` for email CSS compilation (matching Magento's behavior), implementing full Luma LESS compilation would require recreating Magento's complex source file resolution and preprocessing logic.
 
 **For Hyva themes, none of this is needed** because:
 - Hyva uses Tailwind CSS (pre-built), not LESS
@@ -278,11 +275,11 @@ This would add significant complexity and external dependencies (Node.js, potent
 
 ### Email CSS Differences
 
-The email CSS output may differ slightly from Magento's native output:
+The email CSS output is nearly identical to Magento's native output since we use the same PHP LESS compiler (`wikimedia/less.php`). Minor differences may occur:
 
-1. **email.css**: Node's `lessc` correctly implements the LESS `@import (reference)` directive, outputting only non-inline styles (media queries, hover states). Magento's PHP LESS compiler appears to output all styles. Our output is more spec-compliant.
+1. **Font family**: The Go binary correctly resolves theme variable inheritance (e.g., `'Open Sans'` from Blank theme), while Magento's preprocessing may produce different results depending on the theme hierarchy.
 
-2. **email-inline.css**: Minor differences in URL placeholder format and potentially different font families based on theme variables (e.g., 'Open Sans' from Hyva email module vs 'Helvetica Neue' from Luma).
+2. **URL placeholders**: Both use the correct `{{base_url_path}}` format for email-fonts.css imports.
 
 These differences are functionally equivalent and should not affect email rendering.
 
@@ -292,7 +289,7 @@ These differences are functionally equivalent and should not affect email render
 
 - `main.go`: CLI interface, orchestration logic
 - `watcher.go`: File change detection (for future watch mode)
-- `less.go`: LESS to CSS compilation using Node's lessc
+- `less.go`: LESS to CSS compilation using PHP's wikimedia/less.php (same as Magento)
 - `less_preprocessor.go`: Magento-style LESS preprocessing (@magento_import, source staging)
 
 ### Building
@@ -331,13 +328,11 @@ setup-static-content-deploy:
     # Build Hyva theme assets
     - if [ ! -z $THEME_PATH ]; then npm --prefix $THEME_PATH ci --no-audit; fi
     - if [ ! -z $THEME_PATH ]; then NODE_ENV=production npm --prefix $THEME_PATH run build-prod; fi
-    # Install less compiler globally (nvm handles this without sudo)
-    - npm install -g less
     # Download and use Go binary for frontend static content (much faster)
     - echo "Downloading magento2-static-deploy binary..."
     - curl -sL -o /tmp/magento2-static-deploy https://github.com/elgentos/magento2-static-deploy/releases/latest/download/magento2-static-deploy-linux-amd64
     - chmod +x /tmp/magento2-static-deploy
-    # Deploy frontend static content using Go binary
+    # Deploy frontend static content using Go binary (uses PHP for email CSS compilation)
     - echo "Deploying frontend static content using Go binary..."
     - /tmp/magento2-static-deploy -root . -themes ${THEMES} -locales $(echo ${STATIC_LOCALES} | tr ' ' ',') -areas frontend -v
     # Deploy admin static content using Magento CLI (Go binary is Hyva-focused)
