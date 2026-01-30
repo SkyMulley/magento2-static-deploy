@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/xml"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	flag "github.com/spf13/pflag"
 )
 
 // DeployJob represents a single deployment job (locale/theme/area combo)
@@ -37,45 +38,91 @@ type ModuleConfig struct {
 	} `xml:"module"`
 }
 
+// CLI flags (Magento-compatible)
 var (
-	magentoRoot    = flag.String("root", ".", "Path to Magento root directory")
-	locales        = flag.String("locales", "en_US", "Comma-separated locales (e.g., en_US,nl_NL,de_DE)")
-	themes         = flag.String("themes", "Vendor/Hyva", "Comma-separated themes (e.g., Vendor/Hyva,Hyva/reset)")
-	areas          = flag.String("areas", "frontend", "Comma-separated areas (default: frontend only)")
-	jobs           = flag.Int("jobs", 0, "Number of parallel jobs (0 = auto-detect CPU count)")
-	strategy       = flag.String("strategy", "quick", "Deployment strategy (quick, standard, compact)")
-	force          = flag.Bool("force", false, "Force deployment even if files exist")
-	verbose        = flag.Bool("v", false, "Verbose output")
-	contentVersion = flag.String("content-version", "", "Static content version (default: auto-generate timestamp)")
+	magentoRoot    string
+	areasFlag      []string
+	themesFlag     []string
+	languagesFlag  []string
+	jobsFlag       int
+	strategyFlag   string
+	forceFlag      bool
+	verboseFlag    bool
+	contentVersion string
 )
+
+func init() {
+	// Magento-compatible flags
+	flag.StringVarP(&magentoRoot, "root", "r", ".", "Path to Magento root directory")
+	flag.StringArrayVarP(&areasFlag, "area", "a", []string{}, "Generate files only for the specified areas (can be repeated)")
+	flag.StringArrayVarP(&themesFlag, "theme", "t", []string{}, "Generate static view files for only the specified themes (can be repeated)")
+	flag.StringArrayVarP(&languagesFlag, "language", "l", []string{}, "Generate files only for the specified languages (can be repeated)")
+	flag.IntVarP(&jobsFlag, "jobs", "j", 0, "Enable parallel processing using the specified number of jobs (0 = auto-detect)")
+	flag.StringVarP(&strategyFlag, "strategy", "s", "quick", "Deploy files using specified strategy")
+	flag.BoolVarP(&forceFlag, "force", "f", false, "Deploy files in any mode")
+	flag.BoolVarP(&verboseFlag, "verbose", "v", false, "Verbose output")
+	flag.StringVar(&contentVersion, "content-version", "", "Custom version of static content")
+
+	// Custom usage message
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] [languages...]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Deploys static view files (Magento-compatible CLI)\n\n")
+		fmt.Fprintf(os.Stderr, "Arguments:\n")
+		fmt.Fprintf(os.Stderr, "  languages    Space-separated list of ISO-639 language codes\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  %s nl_NL en_US\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -f --area=frontend --theme=Vendor/Hyva nl_NL\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -f -a frontend -a adminhtml -t Vendor/Hyva -j 4 nl_NL en_US\n", os.Args[0])
+	}
+}
 
 func main() {
 	flag.Parse()
 
-	numJobs := *jobs
+	// Collect languages from positional arguments and --language flags
+	languages := collectLanguages()
+	if len(languages) == 0 {
+		languages = []string{"en_US"} // Default
+	}
+
+	// Collect areas (default to frontend if not specified)
+	areas := areasFlag
+	if len(areas) == 0 {
+		areas = []string{"frontend"}
+	}
+
+	// Collect themes (default if not specified)
+	themes := themesFlag
+	if len(themes) == 0 {
+		themes = []string{"Vendor/Hyva"}
+	}
+
+	numJobs := jobsFlag
 	if numJobs <= 0 {
 		numJobs = runtime.NumCPU()
 	}
 
-	if *verbose {
+	if verboseFlag {
 		fmt.Printf("Magento Static Content Deployer (Go)\n")
-		fmt.Printf("Root: %s\n", *magentoRoot)
-		fmt.Printf("Locales: %v\n", parseCSV(*locales))
-		fmt.Printf("Themes: %v\n", parseCSV(*themes))
-		fmt.Printf("Areas: %v\n", parseCSV(*areas))
+		fmt.Printf("Root: %s\n", magentoRoot)
+		fmt.Printf("Languages: %v\n", languages)
+		fmt.Printf("Themes: %v\n", themes)
+		fmt.Printf("Areas: %v\n", areas)
 		fmt.Printf("Parallel Jobs: %d\n", numJobs)
-		fmt.Printf("Strategy: %s\n\n", *strategy)
+		fmt.Printf("Strategy: %s\n\n", strategyFlag)
 	}
 
 	start := time.Now()
 	results := deployStatic(
-		*magentoRoot,
-		parseCSV(*locales),
-		parseCSV(*themes),
-		parseCSV(*areas),
+		magentoRoot,
+		languages,
+		themes,
+		areas,
 		numJobs,
-		*verbose,
-		*contentVersion,
+		verboseFlag,
+		contentVersion,
 	)
 
 	printResults(results, time.Since(start))
@@ -91,6 +138,29 @@ func main() {
 	if hasErrors {
 		os.Exit(1)
 	}
+}
+
+// collectLanguages gathers languages from both positional args and --language flags
+func collectLanguages() []string {
+	var languages []string
+
+	// Add languages from --language/-l flags
+	languages = append(languages, languagesFlag...)
+
+	// Add positional arguments (space-separated languages like Magento)
+	languages = append(languages, flag.Args()...)
+
+	// Remove duplicates while preserving order
+	seen := make(map[string]bool)
+	unique := []string{}
+	for _, lang := range languages {
+		if !seen[lang] {
+			seen[lang] = true
+			unique = append(unique, lang)
+		}
+	}
+
+	return unique
 }
 
 // deployStatic orchestrates the parallel deployment
@@ -722,17 +792,3 @@ func shouldSkipFile(relPath string) bool {
 	return false
 }
 
-// Helper functions
-
-func parseCSV(s string) []string {
-	if s == "" {
-		return []string{}
-	}
-	var result []string
-	for _, item := range strings.Split(s, ",") {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
-}

@@ -33,28 +33,20 @@ go build -o magento2-static-deploy main.go watcher.go less.go less_preprocessor.
 
 ## Usage
 
+The CLI is designed to be compatible with Magento's `bin/magento setup:static-content:deploy` command.
+
 ### Basic Usage
 
 Deploy Vendor/Hyva theme to frontend area:
 
 ```bash
-./tools/magento2-static-deploy/magento2-static-deploy \
-  -root . \
-  -locales nl_NL \
-  -themes Vendor/Hyva \
-  -areas frontend
+./magento2-static-deploy -f --area=frontend --theme=Vendor/Hyva nl_NL
 ```
 
 ### With Verbose Output
 
 ```bash
-./tools/magento2-static-deploy/magento2-static-deploy \
-  -root . \
-  -locales nl_NL,en_US \
-  -themes Vendor/Hyva \
-  -areas frontend \
-  -jobs 8 \
-  -v
+./magento2-static-deploy -f -a frontend -t Vendor/Hyva -j 8 -v nl_NL en_US
 ```
 
 ### Note on Admin Themes
@@ -66,43 +58,42 @@ By default, only `frontend` area is deployed. This is because:
 
 To deploy admin themes if they exist:
 ```bash
-./magento2-static-deploy -areas frontend,adminhtml -v
+./magento2-static-deploy -f -a frontend -a adminhtml -v nl_NL
 ```
 
 ### All Options
 
 ```
-  -root string
-        Path to Magento root directory (default ".")
+Arguments:
+  languages    Space-separated list of ISO-639 language codes (e.g., nl_NL en_US)
 
-  -locales string
-        Comma-separated locales (default "nl_NL")
-        Example: nl_NL,en_US,de_DE
+Options:
+  -r, --root string              Path to Magento root directory (default ".")
 
-  -themes string
-        Comma-separated themes (default "Vendor/Hyva")
-        Example: Vendor/Hyva,Magento/blank,Hyva/reset
+  -a, --area stringArray         Generate files only for the specified areas
+                                 Can be repeated: -a frontend -a adminhtml
+                                 Default: frontend
 
-  -areas string
-        Comma-separated areas (default "frontend,adminhtml")
-        Options: frontend, adminhtml
+  -t, --theme stringArray        Generate static view files for only the specified themes
+                                 Can be repeated: -t Vendor/Hyva -t Hyva/reset
+                                 Default: Vendor/Hyva
 
-  -jobs int
-        Number of parallel jobs (default 0 = auto-detect CPU count)
-        Use -jobs 1 for sequential processing
+  -l, --language stringArray     Generate files only for the specified languages
+                                 Can be repeated: -l nl_NL -l en_US
+                                 Alternative to positional arguments
 
-  -strategy string
-        Deployment strategy (default "quick")
-        Note: Currently only copies files; strategy is informational
+  -j, --jobs int                 Enable parallel processing using the specified number of jobs
+                                 Default: 0 (auto-detect CPU count)
 
-  -force
-        Force deployment even if files exist (always copies)
+  -s, --strategy string          Deploy files using specified strategy (default "quick")
+                                 Note: Currently informational only
 
-  -content-version string
-        Static content version (default: auto-generate timestamp)
-        Use this to reuse the same version across multiple deployments
+  -f, --force                    Deploy files in any mode
 
-  -v    Verbose output showing per-deployment progress
+      --content-version string   Custom version of static content
+                                 Default: auto-generate timestamp
+
+  -v, --verbose                  Verbose output showing per-deployment progress
 ```
 
 ## Examples
@@ -110,31 +101,31 @@ To deploy admin themes if they exist:
 ### Deploy Single Locale/Theme
 
 ```bash
-./magento2-static-deploy -root /var/www/magento -locales nl_NL -themes Vendor/Hyva -areas frontend
+./magento2-static-deploy -f -r /var/www/magento -a frontend -t Vendor/Hyva nl_NL
 ```
 
 ### Deploy Multiple Locales and Themes
 
 ```bash
-./magento2-static-deploy \
-  -locales nl_NL,en_US,de_DE \
-  -themes Vendor/Hyva,Magento/blank \
-  -areas frontend
+./magento2-static-deploy -f \
+  -a frontend \
+  -t Vendor/Hyva -t Magento/blank \
+  nl_NL en_US de_DE
 ```
 
 ### Sequential Processing (1 Job)
 
 ```bash
-./magento2-static-deploy -jobs 1 -v
+./magento2-static-deploy -f -j 1 -v nl_NL
 ```
 
 ### Full Admin + Frontend Deployment
 
 ```bash
-./magento2-static-deploy \
-  -locales nl_NL \
-  -themes Vendor/Hyva \
-  -areas frontend,adminhtml
+./magento2-static-deploy -f \
+  -a frontend -a adminhtml \
+  -t Vendor/Hyva \
+  nl_NL
 ```
 
 ### Reuse Content Version (for Split Deployments)
@@ -143,16 +134,16 @@ When splitting deployments across multiple runs (e.g., deploying different local
 
 ```bash
 # First deployment
-./magento2-static-deploy \
-  -locales nl_NL \
-  -themes Vendor/Hyva \
-  -content-version 1234567890
+./magento2-static-deploy -f \
+  -t Vendor/Hyva \
+  --content-version=1234567890 \
+  nl_NL
 
 # Second deployment with the same version
-./magento2-static-deploy \
-  -locales en_US,de_DE \
-  -themes Vendor/Hyva \
-  -content-version 1234567890
+./magento2-static-deploy -f \
+  -t Vendor/Hyva \
+  --content-version=1234567890 \
+  en_US de_DE
 ```
 
 This is useful for deployment tools like [Deployer](https://github.com/deployphp/deployer) or Hypernode Deploy that optimize deployments by splitting locale-theme combinations across multiple processes.
@@ -332,9 +323,9 @@ setup-static-content-deploy:
     - echo "Downloading magento2-static-deploy binary..."
     - curl -sL -o /tmp/magento2-static-deploy https://github.com/elgentos/magento2-static-deploy/releases/latest/download/magento2-static-deploy-linux-amd64
     - chmod +x /tmp/magento2-static-deploy
-    # Deploy frontend static content using Go binary (uses PHP for email CSS compilation)
+    # Deploy frontend static content using Go binary (Magento-compatible CLI)
     - echo "Deploying frontend static content using Go binary..."
-    - /tmp/magento2-static-deploy -root . -themes ${THEMES} -locales $(echo ${STATIC_LOCALES} | tr ' ' ',') -areas frontend -v
+    - /tmp/magento2-static-deploy -f -a frontend -t ${THEMES} -v ${STATIC_LOCALES}
     # Deploy admin static content using Magento CLI (Go binary is Hyva-focused)
     - php bin/magento setup:static-content:deploy -f -j ${JOB_CONCURRENCY:-$(nproc)} --area adminhtml ${STATIC_ADMIN_LOCALES:-"nl_NL en_US"}
 ```
@@ -356,12 +347,12 @@ task('magento:deploy:assets', function () {
         run('chmod +x /tmp/magento2-static-deploy');
     });
 
-    // Deploy frontend themes using Go binary
+    // Deploy frontend themes using Go binary (Magento-compatible CLI)
     $themes = get('magento_themes');
     foreach ($themes as $theme => $locales) {
         within("{{release_or_current_path}}", function () use ($theme, $locales) {
             run('echo "Deploying static content for theme ' . $theme . ' and locales: ' . $locales . '"');
-            run('/tmp/magento2-static-deploy -root . -themes ' . $theme . ' -locales ' . join(',', explode(' ', $locales)) . ' -areas frontend -v');
+            run('/tmp/magento2-static-deploy -f -a frontend -t ' . $theme . ' -v ' . $locales);
         });
     }
 });
