@@ -351,12 +351,18 @@ Since this tool only copies files, it integrates well with existing Magento setu
 
 ## CI/CD Integration
 
+This tool is designed as a **drop-in replacement** for Magento's `bin/magento setup:static-content:deploy` with Magento-compatible CLI flags. Typical results:
+
+- **115 seconds → 0.3 seconds** for frontend deployment
+- **230-380x faster** than the PHP implementation
+- **40,000+ files/second** throughput
+
 ### GitLab CI/CD
 
-If you're using a GitLab CI/CD pipeline with a `setup-static-content-deploy` job, you can override it to use this Go binary for significantly faster frontend deployments:
+If you're using a GitLab CI/CD pipeline with a `setup-static-content-deploy` job, you can replace it entirely with this Go binary. The tool automatically detects Hyvä vs Luma themes and dispatches Luma themes to `bin/magento` when needed:
 
 ```yaml
-# Override setup-static-content-deploy to use Go binary for frontend (10x faster)
+# Replace setup-static-content-deploy with Go binary (230x faster for Hyvä, auto-fallback for Luma)
 setup-static-content-deploy:
   stage: build
   script:
@@ -365,49 +371,40 @@ setup-static-content-deploy:
     # Build Hyva theme assets
     - if [ ! -z $THEME_PATH ]; then npm --prefix $THEME_PATH ci --no-audit; fi
     - if [ ! -z $THEME_PATH ]; then NODE_ENV=production npm --prefix $THEME_PATH run build-prod; fi
-    # Download and use Go binary for frontend static content (much faster)
-    - echo "Downloading magento2-static-deploy binary..."
+    # Download Go binary
     - curl -sL -o /tmp/magento2-static-deploy https://github.com/elgentos/magento2-static-deploy/releases/latest/download/magento2-static-deploy-linux-amd64
     - chmod +x /tmp/magento2-static-deploy
-    # Deploy frontend static content using Go binary (Magento-compatible CLI)
-    - echo "Deploying frontend static content using Go binary..."
-    - /tmp/magento2-static-deploy -f -a frontend -t ${THEMES} -v ${STATIC_LOCALES}
-    # Deploy admin static content using Magento CLI (Go binary is Hyva-focused)
-    - php bin/magento setup:static-content:deploy -f -j ${JOB_CONCURRENCY:-$(nproc)} --area adminhtml ${STATIC_ADMIN_LOCALES:-"nl_NL en_US"}
+    # Deploy all static content (Hyvä themes use Go, Luma themes auto-dispatch to bin/magento)
+    - /tmp/magento2-static-deploy --force --area=frontend --area=adminhtml --theme=${THEMES} --verbose ${STATIC_LOCALES}
 ```
 
-This approach uses the Go binary for frontend (Hyva) themes while falling back to Magento's native CLI for adminhtml, which may require RequireJS config merging and other Luma-specific processing.
+The Go binary acts as a drop-in replacement - Hyvä themes get the fast Go deployment while Luma/adminhtml themes are automatically handed off to `bin/magento setup:static-content:deploy`.
 
 ### Deployer (Pull Approach)
 
-If you use [Deployer](https://deployer.org/) with a pull-based deployment strategy, you can override the `magento:deploy:assets` task:
+If you use [Deployer](https://deployer.org/) with a pull-based deployment strategy, you can override the `magento:deploy:assets` task. The Go binary handles both Hyvä and Luma themes automatically:
 
 ```php
 task('magento:deploy:assets', function () {
-    // Deploy adminhtml using Magento CLI
-    invoke('magento:deploy:assets:adminhtml');
-
     // Download the Go binary
     within("{{release_or_current_path}}", function () {
         run('curl -sL -o /tmp/magento2-static-deploy https://github.com/elgentos/magento2-static-deploy/releases/latest/download/magento2-static-deploy-linux-amd64');
         run('chmod +x /tmp/magento2-static-deploy');
     });
 
-    // Deploy frontend themes using Go binary (Magento-compatible CLI)
-    $themes = get('magento_themes');
-    foreach ($themes as $theme => $locales) {
-        within("{{release_or_current_path}}", function () use ($theme, $locales) {
-            run('echo "Deploying static content for theme ' . $theme . ' and locales: ' . $locales . '"');
-            run('/tmp/magento2-static-deploy -f -a frontend -t ' . $theme . ' -v ' . $locales);
-        });
-    }
+    // Deploy all static content (Hyvä uses Go, Luma auto-dispatches to bin/magento)
+    $themes = implode(' ', array_map(fn($t) => "--theme=$t", get('magento_themes')));
+    $locales = implode(' ', get('magento_locales'));
+
+    within("{{release_or_current_path}}", function () use ($themes, $locales) {
+        run("/tmp/magento2-static-deploy --force --area=frontend --area=adminhtml $themes --verbose $locales");
+    });
 });
 ```
 
-Make sure your `magento_themes` configuration is set up in your `deploy.php`:
+Make sure your configuration is set up in your `deploy.php`:
 
 ```php
-set('magento_themes', [
-    'Vendor/Hyva' => 'nl_NL en_US',
-]);
+set('magento_themes', ['Vendor/Hyva', 'Magento/backend']);
+set('magento_locales', ['nl_NL', 'en_US']);
 ```
