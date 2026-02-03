@@ -970,7 +970,7 @@ func discoverVendorThemePath(magentoRoot string, area string, themeName string) 
 	}
 
 	// The registration pattern we're looking for:
-	// ComponentRegistrar::register(ComponentRegistrar::THEME, 'frontend/Aware/default', __DIR__);
+	// ComponentRegistrar::register(ComponentRegistrar::THEME, 'frontend/Vendor/default', __DIR__);
 	// or with double quotes
 	searchPattern := area + "/" + themeName
 
