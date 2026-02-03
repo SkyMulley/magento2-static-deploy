@@ -299,7 +299,10 @@ func themeExists(magentoRoot string, area string, themeName string) bool {
 			return true
 		}
 	}
-	return false
+
+	// Fallback: try auto-discovery for non-standard vendor package names
+	discoveredPath := discoverVendorThemePath(magentoRoot, area, themeName)
+	return discoveredPath != ""
 }
 
 // getThemePath returns the physical path of a theme
@@ -310,10 +313,17 @@ func getThemePath(magentoRoot string, area string, themeName string) string {
 		return appDesignPath
 	}
 
-	// Check vendor path
+	// Check vendor path using conventional naming
 	vendorPath := filepath.Join(magentoRoot, getVendorThemePath(area, themeName))
 	if _, err := os.Stat(vendorPath); err == nil {
 		return vendorPath
+	}
+
+	// Fallback: auto-discover vendor theme path by scanning registration.php files
+	// This handles non-standard Composer package naming conventions
+	discoveredPath := discoverVendorThemePath(magentoRoot, area, themeName)
+	if discoveredPath != "" {
+		return discoveredPath
 	}
 
 	return ""
@@ -933,6 +943,86 @@ func createDeploymentVersionFile(magentoRoot string, version string, verbose boo
 	}
 
 	return nil
+}
+
+// vendorThemeCache caches discovered vendor theme paths to avoid repeated filesystem scans
+var vendorThemeCache = make(map[string]string)
+var vendorThemeCacheMutex sync.RWMutex
+
+// discoverVendorThemePath scans vendor/ directory for theme registration.php files
+// to dynamically find theme paths regardless of Composer package naming conventions.
+// Returns the discovered path or empty string if not found.
+func discoverVendorThemePath(magentoRoot string, area string, themeName string) string {
+	cacheKey := area + "/" + themeName
+
+	// Check cache first
+	vendorThemeCacheMutex.RLock()
+	if cachedPath, found := vendorThemeCache[cacheKey]; found {
+		vendorThemeCacheMutex.RUnlock()
+		return cachedPath
+	}
+	vendorThemeCacheMutex.RUnlock()
+
+	vendorDir := filepath.Join(magentoRoot, "vendor")
+	vendorEntries, err := os.ReadDir(vendorDir)
+	if err != nil {
+		return ""
+	}
+
+	// The registration pattern we're looking for:
+	// ComponentRegistrar::register(ComponentRegistrar::THEME, 'frontend/Aware/default', __DIR__);
+	// or with double quotes
+	searchPattern := area + "/" + themeName
+
+	for _, vendorEntry := range vendorEntries {
+		if !vendorEntry.IsDir() {
+			continue
+		}
+		vendorName := vendorEntry.Name()
+		vendorPath := filepath.Join(vendorDir, vendorName)
+
+		packageEntries, err := os.ReadDir(vendorPath)
+		if err != nil {
+			continue
+		}
+
+		for _, packageEntry := range packageEntries {
+			if !packageEntry.IsDir() {
+				continue
+			}
+			packagePath := filepath.Join(vendorPath, packageEntry.Name())
+
+			// Check for registration.php
+			registrationPath := filepath.Join(packagePath, "registration.php")
+			data, err := os.ReadFile(registrationPath)
+			if err != nil {
+				continue
+			}
+
+			content := string(data)
+
+			// Check if this is a theme registration for our target theme
+			// Look for both single and double quote patterns
+			if strings.Contains(content, "ComponentRegistrar::THEME") &&
+				(strings.Contains(content, "'"+searchPattern+"'") ||
+					strings.Contains(content, "\""+searchPattern+"\"")) {
+				// Found it! Cache and return the path
+				vendorThemeCacheMutex.Lock()
+				vendorThemeCache[cacheKey] = packagePath
+				vendorThemeCacheMutex.Unlock()
+				if verboseFlag {
+					fmt.Printf("  Auto-discovered vendor theme: %s -> %s\n", themeName, packagePath)
+				}
+				return packagePath
+			}
+		}
+	}
+
+	// Cache negative result too to avoid repeated scans
+	vendorThemeCacheMutex.Lock()
+	vendorThemeCache[cacheKey] = ""
+	vendorThemeCacheMutex.Unlock()
+	return ""
 }
 
 // getVendorThemePath converts a theme name to its vendor package path
