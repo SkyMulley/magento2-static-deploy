@@ -335,6 +335,30 @@ func getThemeParent(themePath string) string {
 	return strings.TrimSpace(config.Parent)
 }
 
+// getThemeParentChain builds the complete parent theme chain for a theme
+// Returns themes in order from the theme itself to its most distant ancestor
+// e.g., for GHDE/default -> [GHDE/default, GHNL/default, Sudac/default, Hyva/reset]
+// This order ensures child theme files are copied first and not overwritten by parent files
+func getThemeParentChain(magentoRoot string, area string, themeName string) []string {
+	var chain []string
+	visited := make(map[string]bool)
+	current := themeName
+
+	for current != "" && !visited[current] {
+		visited[current] = true
+		chain = append(chain, current) // Append to get child-first order
+
+		themePath := getThemePath(magentoRoot, area, current)
+		if themePath == "" {
+			break
+		}
+
+		current = getThemeParent(themePath)
+	}
+
+	return chain
+}
+
 // isHyvaTheme checks if a theme is Hyvä-based by checking its parent chain
 func isHyvaTheme(magentoRoot string, area string, themeName string, visited map[string]bool) bool {
 	// Prevent infinite loops
@@ -536,7 +560,7 @@ func processJobs(magentoRoot string, jobs []DeployJob, numJobs int, verbose bool
 
 // deployTheme handles the actual deployment for a theme/locale/area
 // For Hyva-based themes, this copies from:
-// 1. Theme web directory: app/design/{area}/{vendor}/{theme}/web
+// 1. Theme web directory: app/design/{area}/{vendor}/{theme}/web (including parent themes)
 // 2. Library files: vendor/mage-os/magento2-base/lib/web/
 // 3. Extension view files from multiple locations:
 //    - vendor/*/view/{area}/web/
@@ -550,9 +574,6 @@ func deployTheme(magentoRoot string, job DeployJob, version string) (int64, erro
 		return 0, fmt.Errorf("invalid theme name: %s", job.Theme)
 	}
 
-	themeVendor := parts[0]
-	themeName := parts[1]
-
 	// Destination directory - deploy to pub/static/ (nginx handles versioning via URL rewriting)
 	destDir := filepath.Join(magentoRoot, "pub/static", job.Area, job.Theme, job.Locale)
 
@@ -563,35 +584,63 @@ func deployTheme(magentoRoot string, job DeployJob, version string) (int64, erro
 
 	var fileCount int64
 
-	// 1. Copy theme web directory (app/design/{area}/{vendor}/{theme}/web)
-	themeWebDir := filepath.Join(magentoRoot, "app/design", job.Area, themeVendor, themeName, "web")
-	if _, err := os.Stat(themeWebDir); err == nil {
-		count, err := copyDirectory(themeWebDir, destDir)
-		if err != nil {
-			return 0, fmt.Errorf("failed to copy theme directory: %w", err)
-		}
-		fileCount += count
-	}
+	// 1. Build parent theme chain and copy from all themes (child-first so child files take priority)
+	// e.g., for GHDE/default: [GHDE/default, GHNL/default, Sudac/default, Hyva/reset]
+	// Since copyDirectory skips existing files, child theme files won't be overwritten by parents
+	themeChain := getThemeParentChain(magentoRoot, job.Area, job.Theme)
 
-	// 1b. Copy theme module overrides (app/design/{area}/{vendor}/{theme}/{ModuleName}/web/)
-	// These override module web assets in the theme
-	themeBaseDir := filepath.Join(magentoRoot, "app/design", job.Area, themeVendor, themeName)
-	if themeEntries, err := os.ReadDir(themeBaseDir); err == nil {
-		for _, entry := range themeEntries {
-			// Skip non-directories and the "web" directory itself
-			if !entry.IsDir() || entry.Name() == "web" {
+	for _, chainTheme := range themeChain {
+		chainParts := strings.Split(chainTheme, "/")
+		if len(chainParts) != 2 {
+			continue
+		}
+		chainVendor := chainParts[0]
+		chainName := chainParts[1]
+
+		// Try app/design path first
+		themeWebDir := filepath.Join(magentoRoot, "app/design", job.Area, chainVendor, chainName, "web")
+		if _, err := os.Stat(themeWebDir); err == nil {
+			count, err := copyDirectory(themeWebDir, destDir)
+			if err != nil {
+				// Log but continue with other themes in chain
 				continue
 			}
-			// Check if this is a module override (contains a web directory)
-			moduleWebDir := filepath.Join(themeBaseDir, entry.Name(), "web")
-			if _, err := os.Stat(moduleWebDir); err == nil {
-				// This is a module override - deploy to ModuleName/ prefix
-				moduleName := entry.Name()
-				count, err := copyDirectoryWithModulePrefix(moduleWebDir, destDir, moduleName)
+			fileCount += count
+		}
+
+		// Also try vendor path for themes installed via composer
+		vendorThemePath := getThemePath(magentoRoot, job.Area, chainTheme)
+		if vendorThemePath != "" {
+			vendorWebDir := filepath.Join(vendorThemePath, "web")
+			if _, err := os.Stat(vendorWebDir); err == nil {
+				count, err := copyDirectory(vendorWebDir, destDir)
 				if err != nil {
 					continue
 				}
 				fileCount += count
+			}
+		}
+
+		// 1b. Copy theme module overrides (app/design/{area}/{vendor}/{theme}/{ModuleName}/web/)
+		// These override module web assets in the theme
+		themeBaseDir := filepath.Join(magentoRoot, "app/design", job.Area, chainVendor, chainName)
+		if themeEntries, err := os.ReadDir(themeBaseDir); err == nil {
+			for _, entry := range themeEntries {
+				// Skip non-directories and the "web" directory itself
+				if !entry.IsDir() || entry.Name() == "web" {
+					continue
+				}
+				// Check if this is a module override (contains a web directory)
+				moduleWebDir := filepath.Join(themeBaseDir, entry.Name(), "web")
+				if _, err := os.Stat(moduleWebDir); err == nil {
+					// This is a module override - deploy to ModuleName/ prefix
+					moduleName := entry.Name()
+					count, err := copyDirectoryWithModulePrefix(moduleWebDir, destDir, moduleName)
+					if err != nil {
+						continue
+					}
+					fileCount += count
+				}
 			}
 		}
 	}
