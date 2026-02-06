@@ -631,25 +631,33 @@ func deployTheme(magentoRoot string, job DeployJob, version string) (int64, erro
 			}
 		}
 
-		// 1b. Copy theme module overrides (app/design/{area}/{vendor}/{theme}/{ModuleName}/web/)
+		// 1b. Copy theme module overrides ({themePath}/{ModuleName}/web/)
 		// These override module web assets in the theme
-		themeBaseDir := filepath.Join(magentoRoot, "app/design", job.Area, chainVendor, chainName)
-		if themeEntries, err := os.ReadDir(themeBaseDir); err == nil {
-			for _, entry := range themeEntries {
-				// Skip non-directories and the "web" directory itself
-				if !entry.IsDir() || entry.Name() == "web" {
-					continue
-				}
-				// Check if this is a module override (contains a web directory)
-				moduleWebDir := filepath.Join(themeBaseDir, entry.Name(), "web")
-				if _, err := os.Stat(moduleWebDir); err == nil {
-					// This is a module override - deploy to ModuleName/ prefix
-					moduleName := entry.Name()
-					count, err := copyDirectoryWithModulePrefix(moduleWebDir, destDir, moduleName)
-					if err != nil {
+		// Check both app/design and vendor theme paths
+		themeBaseDirs := []string{
+			filepath.Join(magentoRoot, "app/design", job.Area, chainVendor, chainName),
+		}
+		if vendorThemePath != "" {
+			themeBaseDirs = append(themeBaseDirs, vendorThemePath)
+		}
+		for _, themeBaseDir := range themeBaseDirs {
+			if themeEntries, err := os.ReadDir(themeBaseDir); err == nil {
+				for _, entry := range themeEntries {
+					// Skip non-directories and the "web" directory itself
+					if !entry.IsDir() || entry.Name() == "web" {
 						continue
 					}
-					fileCount += count
+					// Check if this is a module override (contains a web directory)
+					moduleWebDir := filepath.Join(themeBaseDir, entry.Name(), "web")
+					if _, err := os.Stat(moduleWebDir); err == nil {
+						// This is a module override - deploy to ModuleName/ prefix
+						moduleName := entry.Name()
+						count, err := copyDirectoryWithModulePrefix(moduleWebDir, destDir, moduleName)
+						if err != nil {
+							continue
+						}
+						fileCount += count
+					}
 				}
 			}
 		}
